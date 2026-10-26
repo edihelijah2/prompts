@@ -1,0 +1,89 @@
+$pem = Get-Content .\CitiInternalCAChain_COB.pem -Raw
+$certs = [regex]::Matches($pem, '-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----')
+$i = 0; foreach ($c in $certs) { $c.Value | Set-Content "ca-$i.crt"; $i++ }
+
+2. Import each certificate. Back up cacerts.jks first:
+
+powershell
+Copy-Item C:\configs\cacerts.jks C:\configs\cacerts.jks.bak
+Get-ChildItem ca-*.crt | ForEach-Object {
+  keytool -importcert -noprompt -alias "citi-$($_.BaseName)" -file $_.FullName -keystore C:\configs\cacerts.jks -storepass changeit
+}
+
+
+Option 1: Compare the host’s issuer with the JKS contents
+
+1. See which CA signed the host. keytool can fetch it directly, so you don’t need openssl:
+
+keytool -printcert -sslserver your-mongo-host:27017
+
+Note the Issuer of the last certificate in the chain.
+
+2. List what the JKS trusts:
+
+keytool -list -v -keystore C:\configs\cacerts.jks -storepass changeit | findstr /i "Alias Owner"
+
+If no Owner there matches the issuer from step 1, the CA is missing.
+
+Option 2: Test the actual handshake (definitive)
+
+Save this as SSLPoke.java:
+
+java
+import javax.net.ssl.*;
+
+public class SSLPoke {
+    public static void main(String[] a) throws Exception {
+        try (SSLSocket s = (SSLSocket) SSLSocketFactory.getDefault()
+                .createSocket(a[0], Integer.parseInt(a[1]))) {
+            s.startHandshake();
+            System.out.println("OK: trusted");
+        }
+    }
+}
+
+Then run it with Java 21 (no compile step needed):
+
+java -Djavax.net.ssl.trustStore=C:/configs/cacerts.jks -Djavax.net.ssl.trustStorePassword=changeit SSLPoke.java your-mongo-host 27017
+
+If it prints OK: trusted, the JKS is fine and your app should connect. If you get the same PKIX path building failed error, the CA is missing, and you import it as covered earlier.
+
+Finding the right host
+
+Use the hostname from the Mongo URI in your application-local.yml.
+
+mongodb://host1:27017,host2:27017: test any of the listed hosts.
+mongodb+srv://cluster.example.com: that name isn’t a real server. Look up the actual hosts first, then test one of them:
+  nslookup -type=SRV _mongodb._tcp.cluster.example.com
+
+If -printcert -sslserver shows an issuer like Zscaler or your company’s proxy, the traffic is being intercepted. In that case, the proxy’s root cert is what needs to be in the JKS.
+
+Diagnosing the SSL certificate chain error.
+
+Still the same trust failure: the JKS doesn’t contain the CA that signed the server’s certificate. Your project likely already has the fix. An earlier screenshot showed CitiInternalCAChain_COB.pem in the project root, which is almost certainly the internal CA chain your services use.
+
+Import that chain into the JKS
+
+keytool -importcert imports only the first certificate in a multi-cert PEM. Split the file and import each one.
+
+1. Split the PEM in PowerShell (run it from the folder containing the .pem):
+
+powershell
+$pem = Get-Content .\CitiInternalCAChain_COB.pem -Raw
+$certs = [regex]::Matches($pem, '-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----')
+$i = 0; foreach ($c in $certs) { $c.Value | Set-Content "ca-$i.crt"; $i++ }
+
+2. Import each certificate. Back up cacerts.jks first:
+
+powershell
+Copy-Item C:\configs\cacerts.jks C:\configs\cacerts.jks.bak
+Get-ChildItem ca-*.crt | ForEach-Object {
+  keytool -importcert -noprompt -alias "citi-$($_.BaseName)" -file $_.FullName -keystore C:\configs\cacerts.jks -storepass changeit
+}
+
+3. Confirm the fix by rerunning the SSLPoke test from before against your Mongo host. It should print OK: trusted. Then restart the app.
+
+If it still fails
+Check which host is failing. Scroll up in the stack trace past the folded frames. The com.mongodb... frames mean Mongo, but a feign or RestTemplate frame means a different service with a different CA.
+Check the chain against the host. Run keytool -printcert -sslserver host:port and confirm its root issuer matches one of the certs you just imported. If it says Zscaler or another proxy, you need that proxy’s root cert instead.
+Ask a teammate for their working cacerts.jks. Your team likely has one that already works locally, so that’s often quicker than building your own.
