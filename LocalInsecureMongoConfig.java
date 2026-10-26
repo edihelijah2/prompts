@@ -1,3 +1,14 @@
+import com.mongodb.MongoClientSettings;
+import com.mongodb.connection.TransportSettings;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+
+import javax.net.ssl.SSLException;
+
 @Configuration
 @Profile("local")
 public class LocalInsecureMongoConfig {
