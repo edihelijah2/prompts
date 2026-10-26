@@ -1,0 +1,29 @@
+The log shows what’s going on: the app starts and reaches all three Mongo hosts, but two different things fail.
+
+Host	Port	Error
+PKIX (certificate not trusted)
+1. The NY host has the wrong port in your URI
+
+The other two members use 37017, but NY is listed with 27017, and nothing is listening there. Fix it in the Mongo URI in application-local.yml:
+
+
+Compare it with the connection string Compass uses; that’s the one that works.
+
+2. PKIX: test the real hosts on port 37017
+
+My earlier examples used 27017, but your cluster is on 37017. Check which CA signs these servers:
+
+keytool -printcert -sslserver maas-nj-p403-m3116.nam.nsroot.net:37017
+
+Then confirm the fix outside the app. If you went with the Windows store:
+
+java -Djavax.net.ssl.trustStoreType=Windows-ROOT SSLPoke.java maas-nj-p403-m3116.nam.nsroot.net 37017
+
+If you went with the JKS:
+
+java -Djavax.net.ssl.trustStore=C:/configs/cacerts.jks -Djavax.net.ssl.trustStorePassword=changeit SSLPoke.java maas-nj-p403-m3116.nam.nsroot.net 37017
+If SSLPoke prints OK: trusted but the app still fails, the app isn’t using JVM trust for Mongo. Your stack trace shows io.netty, so the driver uses Netty transport, and that’s often configured in code with its own SslContext. Search the project for NettyTransportSettings, SslContextBuilder, applyToSslSettings, and MongoClientSettingsBuilderCustomizer; whichever truststore that code loads is the one that needs the CA.
+If SSLPoke fails too, the CA is still missing. These are nsroot.net hosts, so importing the certs from CitiInternalCAChain_COB.pem into the JKS (steps from earlier) is the most likely fix.
+3. Your curl command is malformed (unrelated)
+
+curl: (3) URL rejected: Malformed input means part of the command was read as a second, invalid URL. That usually comes from an unquoted URL containing &, ?, or spaces, or a broken line continuation. Wrap the URL in single quotes in Git Bash.
